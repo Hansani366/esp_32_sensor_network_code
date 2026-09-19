@@ -26,10 +26,14 @@ tools/
 └── mock_sender.py         # simulate nodes from your laptop, no board needed
 ```
 
-`config.h` is gitignored because it holds your Wi-Fi password. On a fresh clone:
+`config.h` is gitignored because it holds your Wi-Fi password, so it is **not** in
+a fresh clone. The sketch falls back to `config.example.h` when it is missing, so a
+clone still compiles and runs — it just cannot join Wi-Fi until you supply real
+credentials:
 
 ```bash
 cp sensor_node_mock/config.example.h sensor_node_mock/config.h
+# then edit config.h — it takes precedence over the template
 ```
 
 ---

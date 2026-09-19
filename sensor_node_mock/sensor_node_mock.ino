@@ -33,7 +33,19 @@
 
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include "config.h"
+
+/* config.h holds the Wi-Fi password, so it is gitignored and absent from a
+   fresh clone. Falling back to the committed template means the sketch still
+   compiles and runs there — it simply cannot join a network until someone
+   fills in real credentials, which the serial log says in as many words. That
+   is a far better first experience than "config.h: No such file or directory"
+   before the reader has done anything wrong. */
+#if __has_include("config.h")
+  #include "config.h"
+#else
+  #include "config.example.h"
+  #warning "No config.h — using config.example.h. Copy it and fill in your Wi-Fi details."
+#endif
 
 /* ── Scenarios ───────────────────────────────────────────────
    Each is a set of targets the readings wander around, chosen to
