@@ -1,0 +1,11 @@
+# Wi-Fi credentials and the ingest key live here — never commit it.
+# Copy config.example.h → config.h and fill it in locally.
+sensor_node_mock/config.h
+
+# Arduino IDE build output
+build/
+*.bin
+*.elf
+*.hex
+
+.DS_Store
