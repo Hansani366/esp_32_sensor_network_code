@@ -40,7 +40,7 @@ SCENARIOS = {
 CYCLE = ["normal", "smoulder", "fire"]
 
 # Zone ids of the default site (SITE_KEY=home), so extra nodes land in real
-# zones. Swap these for the unit7 ids when the web app runs the demo hall.
+# zones. Swap these for the industrial ids when the web app runs the demo hall.
 ZONES = ["kitchen", "dining", "living", "verander",
          "bedroom-west", "bedroom-southwest", "bedroom-northeast",
          "bedroom-southeast"]

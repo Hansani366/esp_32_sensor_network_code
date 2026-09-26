@@ -39,8 +39,8 @@
    home  (the default): kitchen, dining, living, verander,
          bedroom-west, bedroom-southwest, bedroom-northeast,
          bedroom-southeast
-   unit7 (the demo hall): fabric-store, cutting-floor, dyeing,
-         sewing-a, warehouse, boiler, finishing
+   industrial (the demo hall): fabric-store, cutting-floor,
+         dyeing, sewing-a, warehouse, boiler, finishing
 
    A zone from the wrong site is accepted without any error, and
    the node then never matches a room on the floor plan. */

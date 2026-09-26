@@ -170,7 +170,7 @@ zones, listed in Table 5, and `ZONE_ID` must be one of them.
 | `SITE_KEY` | Valid zone ids |
 |---|---|
 | `home` | `kitchen`, `dining`, `living`, `verander`, `bedroom-west`, `bedroom-southwest`, `bedroom-northeast`, `bedroom-southeast` |
-| `unit7` | `fabric-store`, `cutting-floor`, `dyeing`, `sewing-a`, `warehouse`, `boiler`, `finishing` |
+| `industrial` | `fabric-store`, `cutting-floor`, `dyeing`, `sewing-a`, `warehouse`, `boiler`, `finishing` |
 
 Check this setting carefully. The server accepts any zone name, so a wrong one gives
 **no error message**. The node appears on the dashboard and looks healthy, but it
