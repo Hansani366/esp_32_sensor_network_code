@@ -1,84 +1,211 @@
-# ESP32 Sensor Network — FireWatch nodes
+<!-- FireWatch — ESP32 sensor node firmware -->
 
-Firmware for the sensor units in `diagram.png`: an **ESP32-WROOM-32** carrying an
-**MQ-2** (gas/smoke), **MQ-7** (carbon monoxide), **IR flame module** and **DHT22**
-(temperature/humidity), reporting over Wi-Fi to the FireWatch dashboard.
+# FireWatch — ESP32 sensor nodes
 
-Ships in **mock mode** — the readings are synthesised, so a bare board with nothing
-wired to it still drives the dashboard end to end. Wire the real modules later and
-flip one flag.
+## 1. Overview
+
+This repository holds the firmware for the sensor units in `diagram.png`. Each node
+is an **ESP32-WROOM-32** carrying four parts: an **MQ-2** for combustible gas and
+smoke, an **MQ-7** for carbon monoxide, an **IR flame module**, and a **DHT22** for
+temperature and humidity. A node reports its readings over Wi-Fi to the FireWatch
+dashboard.
+
+**It ships in mock mode.** The readings are generated in software, so a bare board
+with nothing wired to it already drives the dashboard from end to end. You wire the
+real modules later and change one setting.
 
 ```
 ESP32 node ──HTTP POST──▶ sensor-service :8022 ──▶ nginx ──HTTPS──▶ Dashboard
-  (mock readings, every 3s)      (on your laptop)            (Sensor Network card)
+  (readings every 3s)        (on your computer)             (Sensor Network card)
 ```
 
----
+**What makes it different:**
 
-## Layout
+- **Four channels that cover each other.** Each channel is strong where the others
+  are weak, as Table 1 sets out. One sensor alone would either raise false alarms or
+  report a fire too late.
+- **A demo that needs no hardware.** The sketch cycles through normal, smouldering
+  and fire on its own, so the dashboard shows every state while nobody touches the
+  board.
+- **Readings that behave like sensors.** The values drift towards a target instead
+  of being redrawn at random, so the dashboard is tested against something a real
+  sensor could produce.
+- **A node that reports itself.** Nothing is configured on the server. It creates a
+  node the first time one reports.
+- **Silence is visible.** The server marks a node stale after 15 seconds without a
+  sample, so a node that has stopped never reads as a quiet room.
+
+**Two hardware limits.** The ESP32-WROOM-32 uses **2.4 GHz Wi-Fi only**, so a router
+that gives one name to both bands may stop the board connecting. The node also posts
+in plain HTTP on port 8022, not on port 443, because nginx there uses a self-signed
+certificate that a small board should not have to handle.
+
+Table 1 shows why four channels are used together.
+
+**Table 1.** The four sensor channels, what each reacts to, and its weakness.
+
+| Channel | Reacts | Weakness |
+|---|---|---|
+| MQ-2, gas and smoke | Early, before a flame is visible | Also reacts to cooking, sprays, solvents and exhaust |
+| MQ-7, carbon monoxide | To incomplete burning | Slower, and the sensor must be warm |
+| DHT22, temperature | Reliably | Late, because the fire must already be large |
+| IR flame | Immediately, in line of sight | Needs a clear view, and sunlight can fool it |
+
+## 2. Main features
+
+- **Mock mode and real mode.** `MOCK_MODE 1` generates readings in software.
+  `MOCK_MODE 0` reads the real modules through `readRealSensors()`.
+- **A scenario engine.** The sketch moves through normal, smouldering and fire, and
+  changes state every 30 seconds on its own. You can also drive it by hand from the
+  Serial Monitor, as Table 2 sets out.
+- **Targets set around the grading limits.** The scenario values sit on either side
+  of the limits the bridge grades against: MQ-2 warn 400 and danger 800 ppm, MQ-7
+  warn 35 and danger 100 ppm, temperature warn 45 and danger 60 °C. So each state
+  lands on a colour you can predict before the test runs.
+- **Readings that move like sensors.** The values follow a mean-reverting random
+  walk, which is noise plus a slow pull towards the target. Fresh random numbers
+  each tick would jump across the whole range and would look nothing like a sensor.
+- **Node identity.** `DEVICE_ID` names the board and `ZONE_ID` says which room it is
+  in. One node belongs to one zone, and every extra board needs its own pair.
+- **A key on every post.** When `DEVICE_KEY` is set, the node sends it as the
+  `X-Device-Key` header, so an open port on a shared network still refuses unknown
+  boards.
+
+**Driving a demo by hand** uses the keys in Table 2.
+
+**Table 2.** Serial Monitor keys and what each one does.
+
+| Key | Effect |
+|---|---|
+| `n` | Normal — everything green |
+| `s` | Smouldering — MQ-2 and MQ-7 move into the amber band |
+| `f` | Fire — all red, flame detected |
+| `a` | Return to automatic cycling |
+| `?` | Print the Wi-Fi state, the IP address and the post counts |
+
+## 3. Technologies
+
+Table 3 lists the technologies used in the firmware.
+
+**Table 3.** Technologies used in the implementation.
+
+| Area | Technology |
+|---|---|
+| Build and upload | Arduino core for ESP32 |
+| Network | `WiFi.h`, in station mode |
+| Posting | `HTTPClient`, sending JSON |
+| JSON | Built as text with `snprintf`, so no JSON library is needed |
+| Real DHT22, later | Adafruit **DHT sensor library**, already present as two commented lines |
+| Board | ESP32-WROOM-32, Serial Monitor at 115200 baud |
+
+No libraries are needed in mock mode. The repository is laid out as follows:
 
 ```
 sensor_node_mock/
-├── sensor_node_mock.ino   # the sketch — mock generators, Wi-Fi, POST loop
-├── config.example.h       # template, committed
-└── config.h               # ← your settings; GITIGNORED, holds the Wi-Fi password
+├── sensor_node_mock.ino   # the sketch: mock readings, Wi-Fi, POST loop
+├── config.example.h       # the template, committed
+└── config.h               # your settings; GIT IGNORES IT, holds the Wi-Fi password
 tools/
-└── mock_sender.py         # simulate nodes from your laptop, no board needed
+└── mock_sender.py         # simulate nodes from your computer, with no board
 ```
 
-`config.h` is gitignored because it holds your Wi-Fi password, so it is **not** in
-a fresh clone. The sketch falls back to `config.example.h` when it is missing, so a
-clone still compiles and runs — it just cannot join Wi-Fi until you supply real
-credentials:
+## 4. Setup and usage
+
+**Requirements:**
+
+- The Arduino IDE, with the **esp32** boards package by Espressif Systems.
+- An ESP32-WROOM-32 board. No sensors are needed to start.
+- The web app from the FireWatch project, running on the same network.
+- Python 3, to run `tools/mock_sender.py`.
+- Optional: the MQ-2, MQ-7, IR flame and DHT22 modules.
+
+**Configure first.** Git ignores `config.h`, because it holds your Wi-Fi password, so
+a new clone does not have it. The sketch still compiles, because it falls back to
+`config.example.h`, but it cannot join your network until you supply real values:
 
 ```bash
 cp sensor_node_mock/config.example.h sensor_node_mock/config.h
-# then edit config.h — it takes precedence over the template
+# then edit config.h — the sketch prefers it over the template
 ```
 
----
+Table 4 lists every setting.
 
-## Quick start
+**Table 4.** Configuration settings and their defaults. All are set in `config.h`.
 
-### 1. Bring up the web app
+| Setting | Default | Meaning |
+|---|---|---|
+| `WIFI_SSID` | none | Your network name. It must be the **2.4 GHz** one. |
+| `WIFI_PASSWORD` | none | The password for that network. |
+| `SERVER_URL` | `http://192.168.1.118:8022/api/sensors/ingest` | The address of the computer running `docker compose`. |
+| `DEVICE_KEY` | blank | Must match `SENSOR_INGEST_KEY` in the web app's `.env`. Blank on both sides accepts any board that can reach the port. |
+| `DEVICE_ID` | `node-01` | A unique name for this board. |
+| `ZONE_ID` | `fabric-store` | Which room the board is in. It must belong to the active site. |
+| `POST_INTERVAL_MS` | `3000` | Milliseconds between posts. Keep it well under the 15 second stale limit. |
+| `HTTP_TIMEOUT_MS` | `5000` | How long to wait for the server to answer. |
+| `MOCK_MODE` | `1` | `1` generates readings, `0` reads the real modules. |
+| `AUTO_SCENARIO` | `1` | `1` cycles the states, `0` waits for the keys in Table 2. |
+| `SCENARIO_HOLD_MS` | `30000` | How long each state lasts while cycling. |
+
+**Finding the value for `SERVER_URL`.** It is the address of the computer that runs
+`docker compose`, on port 8022. Do not use `localhost`, because that would mean the
+board itself:
+
+```bash
+# macOS
+ipconfig getifaddr en0
+
+# Windows: read the IPv4 Address of your Wi-Fi adapter
+ipconfig
+```
+
+This address comes from DHCP, so **reserve it on your router**. If you do not, the
+setting stops being correct on the day the address changes.
+
+**Matching `ZONE_ID` to the site.** The web app runs either as a house or as an
+industrial unit, and `SITE_KEY` in its `.env` chooses which. Each site has its own
+zones, listed in Table 5, and `ZONE_ID` must be one of them.
+
+**Table 5.** Valid zone ids for each site.
+
+| `SITE_KEY` | Valid zone ids |
+|---|---|
+| `home` | `kitchen`, `dining`, `living`, `verander`, `bedroom-west`, `bedroom-southwest`, `bedroom-northeast`, `bedroom-southeast` |
+| `unit7` | `fabric-store`, `cutting-floor`, `dyeing`, `sewing-a`, `warehouse`, `boiler`, `finishing` |
+
+Check this setting carefully. The server accepts any zone name, so a wrong one gives
+**no error message**. The node appears on the dashboard and looks healthy, but it
+never matches a room on the floor plan. The template ships with `fabric-store`, which
+belongs to the industrial site, so change it when you run the house site.
+
+**Proving the pipeline before you touch hardware:**
 
 ```bash
 cd ../fire_detection_and_classification_web_app
 docker compose up --build -d sensor-service
-```
-
-### 2. Prove the pipeline before touching hardware
-
-```bash
+cd ../esp_32_sensor_network_code
 python3 tools/mock_sender.py
 ```
 
-Open the dashboard — the **Sensor Network** card should start filling in. Doing this
-first means that if the board later fails, you already know the server side works.
+Open the dashboard, and the **Sensor Network** card should start to fill in. Do this
+first. If the board fails later, you already know the server side works, so only the
+board is left to check.
 
 ```bash
 python3 tools/mock_sender.py --nodes 4 --scenario fire   # a whole network, alarming
 python3 tools/mock_sender.py --help                      # all options
 ```
 
-### 3. Flash the board
+**Flashing the board:**
 
 1. Arduino IDE → **Boards Manager** → install **esp32** (Espressif Systems).
-2. Select **ESP32 Dev Module**, and the port your board enumerated on.
-3. `cp sensor_node_mock/config.example.h sensor_node_mock/config.h`, then edit it:
-   - `WIFI_SSID` / `WIFI_PASSWORD` — **2.4 GHz**, see below
-   - `SERVER_URL` — your laptop's LAN address, port 8022
-   - `DEVICE_ID` — unique per node
-4. Upload, then open the Serial Monitor at **115200**.
+2. Choose **ESP32 Dev Module** and the port of your board.
+3. Upload, then open the Serial Monitor at **115200**.
 
-No libraries are needed: the JSON is built with `snprintf` and the mock values need
-no sensor driver. (Wiring the real DHT22 later does add one.)
-
-Expected serial output:
+The expected output is:
 
 ```
 ═══ FireWatch sensor node ═══
-  device : node-01  (zone fabric-store)
+  device : node-01  (zone kitchen)
   mode   : MOCK — no sensors required
   target : http://192.168.1.118:8022/api/sensors/ingest every 3000ms
   keys   : n normal · s smouldering · f fire · a auto · ? status
@@ -88,80 +215,96 @@ Expected serial output:
 [post] #0 NORMAL       MQ2 118ppm  MQ7 4ppm  flame no  27.8°C  62%RH
 ```
 
----
+**Verifying.** The node should appear on the dashboard's **Sensor Network** card
+within a few seconds. Nothing needs to be set up on the server, because it creates a
+node the first time one reports, up to `SENSOR_MAX_NODES`. If the card says
+**Stale**, the posts have stopped.
 
-## Driving a demo
+**Wiring the real sensors.** Set `MOCK_MODE 0` in `config.h` and complete
+`readRealSensors()` in the sketch. Table 6 gives the pin map.
 
-The sketch auto-cycles NORMAL → SMOULDERING → FIRE every 30s so the dashboard shows
-every state unattended. To drive it by hand, type into the Serial Monitor:
-
-| Key | Effect |
-|-----|--------|
-| `n` | Normal — everything green |
-| `s` | Smouldering — MQ-2 and MQ-7 into the amber band |
-| `f` | Fire — all red, flame detected |
-| `a` | Resume auto-cycling |
-| `?` | Print Wi-Fi state, IP, and post counts |
-
-The targets sit either side of the thresholds the bridge grades against (MQ-2 warn
-400 / danger 800 ppm, MQ-7 warn 35 / danger 100 ppm, temp warn 45 / danger 60 °C),
-so each scenario lands a predictable colour on the dashboard.
-
-Values follow a **mean-reverting random walk** — noise plus a pull toward the
-scenario's target — rather than being redrawn at random each tick, which would
-flicker across the whole range and look nothing like a sensor.
-
----
-
-## Wiring the real sensors
-
-Set `MOCK_MODE 0` in `config.h` and fill in `readRealSensors()` in the sketch.
+**Table 6.** Pin map for the real sensor modules.
 
 | Module | Pin | Notes |
-|--------|-----|-------|
-| MQ-2 AO | **GPIO 34** | ADC1, input-only |
-| MQ-7 AO | **GPIO 35** | ADC1, input-only |
-| IR flame DO | GPIO 27 | Digital; active-**LOW** on most 4-pin modules |
-| IR flame AO | GPIO 32 | Optional — the DO alone is enough |
-| DHT22 DATA | GPIO 4 | Digital 1-wire; 10 kΩ pull-up to 3.3 V |
+|---|---|---|
+| MQ-2 AO | **GPIO 34** | ADC1, input only |
+| MQ-7 AO | **GPIO 35** | ADC1, input only |
+| IR flame DO | GPIO 27 | Digital. Active **LOW** on most 4-pin modules |
+| IR flame AO | GPIO 32 | Optional. The DO alone is enough |
+| DHT22 DATA | GPIO 4 | Digital, one wire. 10 kΩ pull-up to 3.3 V |
 
-> ⚠️ **ADC2 does not work while Wi-Fi is on.** That rules out GPIO 0/2/4/12–15/25–27
-> for *any* `analogRead` — they return garbage the moment the radio starts. Both MQ
-> analog outputs must sit on **ADC1 (GPIO 32–39)**. This is the single most common
-> way an ESP32 sensor project goes quietly wrong. Digital pins are unaffected, which
-> is why the flame DO and DHT22 are fine where they are.
+> ⚠️ **ADC2 does not work while Wi-Fi is on.** This rules out GPIO 0, 2, 4, 12–15
+> and 25–27 for *any* `analogRead`, because they return meaningless values as soon as
+> the radio starts. Both MQ analog outputs must therefore sit on **ADC1, GPIO 32–39**.
+> This is the most common way an ESP32 sensor project goes wrong without any error
+> message. Digital pins are not affected, which is why the flame DO and the DHT22 are
+> fine where they are.
 
-> ⚠️ **The MQ modules are 5 V parts** and their AO swings above the ESP32's 3.3 V
-> limit. Put a divider (e.g. 10 kΩ / 20 kΩ) on each AO, or you will damage the pin.
+> ⚠️ **The MQ modules are 5 V parts** and their analog output rises above the ESP32's
+> 3.3 V limit. Put a divider on each one, for example 10 kΩ and 20 kΩ, or you will
+> damage the pin.
 
-> The MQ sensors need a burn-in (24–48 h on first use) and a calibrated Rs/R₀ curve
-> for real ppm figures. The linear scaling in `readRealSensors()` is a placeholder,
-> not a calibration.
+> The MQ sensors also need a burn-in of 24 to 48 hours when new, and a calibrated
+> Rs/R₀ curve for real ppm values. The linear scaling in `readRealSensors()` is a
+> placeholder, not a calibration.
 
-The DHT22 needs the Adafruit **DHT sensor library**; the sketch has the two lines
-commented in place.
+**Adding more nodes.** Give every board its own `DEVICE_ID` and its own `ZONE_ID`
+from Table 5. Nothing changes on the server.
 
----
+**Troubleshooting.** Table 7 lists the common failures and their causes.
 
-## Troubleshooting
+**Table 7.** Common problems and what causes them.
 
 | Symptom | Cause |
-|---------|-------|
-| `[wifi] FAILED` | The WROOM-32 is **2.4 GHz only**. If your router serves both bands under one name, split the SSIDs or point the board at the 2.4 GHz one. |
-| `[post] FAILED code=-1` | Nothing answered. Check the laptop's IP is still `SERVER_URL`, `docker compose ps sensor-service`, and the macOS firewall on 8022. |
+|---|---|
+| `[wifi] FAILED` | The WROOM-32 is **2.4 GHz only**. Split the network names, or point the board at the 2.4 GHz one. |
+| `[post] FAILED code=-1` | Nothing answered. Check that `SERVER_URL` still matches the computer's address, run `docker compose ps sensor-service`, and check the firewall on port 8022. |
 | `[post] FAILED code=401` | `DEVICE_KEY` does not match `SENSOR_INGEST_KEY` in the web app's `.env`. |
-| `[post] FAILED code=422` | Malformed payload — normally a `DEVICE_ID` with characters outside `A-Za-z0-9_.:-`. |
-| Posts succeed, card empty | You are looking at a dashboard served by a *different* host than the one the board posts to. |
-| Card shows "Stale" | Posts stopped. The bridge greys a node after 15s without a sample. |
+| `[post] FAILED code=422` | The payload is malformed, usually a `DEVICE_ID` with characters outside `A-Za-z0-9_.:-`. |
+| Posts succeed, but the card is empty | The dashboard you are watching is served by a different computer from the one the board posts to. |
+| The card shows **Stale** | The posts stopped. The bridge greys a node after 15 seconds without a sample. |
+| The node shows a room that does not exist | `ZONE_ID` belongs to the other site. See Table 5. |
+| It worked yesterday but not today | The computer's address comes from DHCP. Reserve it on the router. |
 
-**The laptop's address is a DHCP lease.** Reserve it on your router, or `SERVER_URL`
-stops being right the day it changes.
+## 5. Scope and design decisions
 
----
+Each point is a decision taken for a stated reason, with what it means for the
+result.
 
-## Adding more nodes
-
-Give each board its own `DEVICE_ID` and a `ZONE_ID` from the web app's zone catalog
-(`alert-service/zones_seed.py`: `fabric-store`, `cutting-floor`, `dyeing`, `sewing-a`,
-`warehouse`, `boiler`, `finishing`). Nothing needs configuring on the server — it
-creates a node the first time one reports, up to `SENSOR_MAX_NODES`.
+- **Mock mode is the default, not an extra.** Gas sensors need a long burn-in and a
+  calibration curve before their numbers mean anything, and a fire cannot be lit
+  safely to test them. Generated readings let the whole path be built and tested
+  first: the board, the network, the grading and the dashboard. When the modules
+  arrive, only one layer is new, so a fault has only one place to hide.
+- **The readings move like sensors, not like random numbers.** A mean-reverting
+  random walk produces values that drift and settle, while fresh random numbers
+  would jump across the full range and would test the dashboard against something no
+  sensor ever does.
+- **Four channels are used together on purpose.** Each covers the weakness of the
+  others, as Table 1 sets out. Gas reacts early but also reacts to cooking, the flame
+  sensor needs a clear view, and temperature is reliable but late.
+- **The scenario targets are set around the grading limits.** Each state lands on a
+  colour that can be predicted before the test runs, which makes a demonstration
+  repeatable and makes a wrong threshold easy to see.
+- **`ZONE_ID` is fixed when the board is flashed.** A node is mounted in one room and
+  stays there, so the zone belongs to the installation rather than to something
+  discovered at start-up. This keeps the firmware small and removes a whole class of
+  start-up failure. Moving a board therefore means flashing it again, and Table 5
+  states the valid values.
+- **The server accepts any zone name.** The sensor bridge stays separate from the
+  zone catalogue, so the two can be developed independently. This is why Table 5
+  gives the valid names and warns that a wrong one is silent. Checking the name at
+  the server is the next step, and it is a small, contained change.
+- **The ingest port is plain HTTP.** TLS on a small board costs memory, and it would
+  also make the board trust a self-signed certificate. Port 8022 is therefore
+  published only on the local network, and `DEVICE_KEY` is available when that
+  network is shared.
+- **The credentials are in a file that Git ignores.** `config.example.h` is committed
+  and documents every setting, while `config.h` holds the real values. The sketch
+  falls back to the template, so a new clone still compiles, and the repository stays
+  safe to publish.
+- **A node sends and then forgets.** There is no queue for readings that fail to
+  send. A fire alarm needs the current state of a room, not a record of the past
+  minute, and a queue would deliver old readings that describe a room as it no longer
+  is. The server marks a silent node stale after 15 seconds, so a connection problem
+  appears on the dashboard instead of being hidden.
