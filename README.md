@@ -1,4 +1,4 @@
-<!-- FireWatch — ESP32 sensor node firmware -->
+![FireWatch: ESP32 sensor nodes, described as multi-sensor fire detection firmware. An ESP32-WROOM-32 board stands at the centre, lit against a forest at dusk. Four panels on the left show the modules wired to it, each with its own trend line: an MQ-2 for smoke and combustible gas, an MQ-7 for carbon monoxide, an IR flame sensor, and a DHT22 for temperature and humidity. Coloured wires run from each panel to the board, which reports over Wi-Fi to a laptop on the right. The FireWatch dashboard there shows one tile per channel and an overall fire risk panel below them.](docs/esp_32_sensor_cover_image.png)
 
 # FireWatch — ESP32 sensor nodes
 
