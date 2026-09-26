@@ -39,9 +39,11 @@ SCENARIOS = {
 }
 CYCLE = ["normal", "smoulder", "fire"]
 
-# Zone ids from alert-service/zones_seed.py, so extra nodes land in real zones.
-ZONES = ["fabric-store", "cutting-floor", "dyeing", "sewing-a",
-         "warehouse", "boiler", "finishing"]
+# Zone ids of the default site (SITE_KEY=home), so extra nodes land in real
+# zones. Swap these for the unit7 ids when the web app runs the demo hall.
+ZONES = ["kitchen", "dining", "living", "verander",
+         "bedroom-west", "bedroom-southwest", "bedroom-northeast",
+         "bedroom-southeast"]
 
 
 def drift(current, target, noise, lo, hi):

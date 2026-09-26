@@ -33,11 +33,19 @@
 
 /* ── Identity ─────────────────────────────────────────────────
    deviceId is the dashboard's key for this board — give each node
-   in the network its own. zoneId should match an id from
-   alert-service/zones_seed.py (fabric-store, cutting-floor,
-   dyeing, sewing-a, warehouse, boiler, finishing). */
+   in the network its own. zoneId must belong to the ACTIVE site,
+   which SITE_KEY chooses in the web app's .env.
+
+   home  (the default): kitchen, dining, living, verander,
+         bedroom-west, bedroom-southwest, bedroom-northeast,
+         bedroom-southeast
+   unit7 (the demo hall): fabric-store, cutting-floor, dyeing,
+         sewing-a, warehouse, boiler, finishing
+
+   A zone from the wrong site is accepted without any error, and
+   the node then never matches a room on the floor plan. */
 #define DEVICE_ID      "node-01"
-#define ZONE_ID        "fabric-store"
+#define ZONE_ID        "kitchen"
 
 /* ── Timing ───────────────────────────────────────────────────
    The bridge reports a node stale after 15s by default, so keep

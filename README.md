@@ -139,7 +139,7 @@ Table 4 lists every setting.
 | `SERVER_URL` | `http://192.168.1.118:8022/api/sensors/ingest` | The address of the computer running `docker compose`. |
 | `DEVICE_KEY` | blank | Must match `SENSOR_INGEST_KEY` in the web app's `.env`. Blank on both sides accepts any board that can reach the port. |
 | `DEVICE_ID` | `node-01` | A unique name for this board. |
-| `ZONE_ID` | `fabric-store` | Which room the board is in. It must belong to the active site. |
+| `ZONE_ID` | `kitchen` | Which room the board is in. It must belong to the active site. |
 | `POST_INTERVAL_MS` | `3000` | Milliseconds between posts. Keep it well under the 15 second stale limit. |
 | `HTTP_TIMEOUT_MS` | `5000` | How long to wait for the server to answer. |
 | `MOCK_MODE` | `1` | `1` generates readings, `0` reads the real modules. |
@@ -174,8 +174,8 @@ zones, listed in Table 5, and `ZONE_ID` must be one of them.
 
 Check this setting carefully. The server accepts any zone name, so a wrong one gives
 **no error message**. The node appears on the dashboard and looks healthy, but it
-never matches a room on the floor plan. The template ships with `fabric-store`, which
-belongs to the industrial site, so change it when you run the house site.
+never matches a room on the floor plan. The template ships with `kitchen`, which
+belongs to the default `home` site, so change it when you run the demo hall.
 
 **Proving the pipeline before you touch hardware:**
 
