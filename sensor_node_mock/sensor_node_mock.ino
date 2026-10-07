@@ -1,18 +1,23 @@
 /* ═══════════════════════════════════════════════════════════
    FireWatch — ESP32 sensor node (mock telemetry over Wi-Fi)
 
-   Simulates the four modules in diagram.png and POSTs them as JSON
-   to the web app's sensor-service:
+   Reads (or, in MOCK_MODE, simulates) the four modules wired as in
+   the "Sensor Node Breadboard Layout, version 3" sheet and POSTs them as
+   JSON to the web app's sensor-service:
 
-     MQ-2    gas / smoke        → ppm
-     MQ-7    carbon monoxide    → ppm
-     IR flame (4-pin)           → detected / not
-     DHT22   temperature+humidity
+     MQ-2    gas / smoke        → ppm   (GPIO 34, via 10k/15k divider)
+     MQ-7    carbon monoxide    → ppm   (GPIO 35, via 10k/15k divider)
+     IR flame (4-pin)           → detected / not  (DO GPIO 27, AO GPIO 32)
+     DHT22   temperature+humidity       (GPIO 4)
 
-   DEPENDENCIES: none beyond the ESP32 board package. The JSON is
-   built with snprintf and the mock values need no sensor library,
-   so this compiles on a bare Arduino IDE install. (Wiring real
-   sensors later does add a DHT library — see readRealSensors().)
+   The node also has a local alarm: green / amber / red LEDs on
+   GPIO 25 / 26 / 33, a buzzer on GPIO 13 and a silence button on
+   GPIO 14. These follow the same thresholds the dashboard uses.
+
+   DEPENDENCIES: in MOCK_MODE none beyond the ESP32 board package.
+   With real sensors (MOCK_MODE 0) install the Adafruit "DHT sensor
+   library" and its "Adafruit Unified Sensor" dependency from the
+   Library Manager.
 
    WHY PUSH, NOT SERVE. It would be less code to answer GET /sensors
    and let the server poll. But this board is on DHCP so its address
@@ -26,13 +31,15 @@
    published on the host as plain HTTP for exactly this — the same
    arrangement alert-service already uses for the phone app.
 
-   SERIAL (115200) — drive the demo by hand:
-     n  normal     s  smouldering     f  fire     a  auto-cycle
+   SERIAL (115200):
+     n  normal     s  smouldering     f  fire     a  auto-cycle  (mock only)
+     c  calibrate R0 in clean air (real mode)     q  silence buzzer
      ?  print status
 ═══════════════════════════════════════════════════════════ */
 
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <math.h>
 
 /* config.h holds the Wi-Fi password, so it is gitignored and absent from a
    fresh clone. Falling back to the committed template means the sketch still
@@ -45,6 +52,11 @@
 #else
   #include "config.example.h"
   #warning "No config.h — using config.example.h. Copy it and fill in your Wi-Fi details."
+#endif
+
+#if !MOCK_MODE
+  #include <DHT.h>
+  static DHT dht(PIN_DHT22, DHT22);
 #endif
 
 /* ── Scenarios ───────────────────────────────────────────────
@@ -82,7 +94,22 @@ static uint32_t lastPostAt   = 0;
 static uint32_t seq          = 0;
 static uint32_t okCount = 0, failCount = 0;
 
+/* Raw ADC counts from the last real read, so the payload reports what
+   the pins actually saw rather than a value derived from the ppm. */
+static int flameRaw = 3900, mq2Raw = 0, mq7Raw = 0;
 
+/* Alarm level derived from the latest readings. */
+enum Level { LVL_NORMAL = 0, LVL_WARN = 1, LVL_DANGER = 2 };
+static Level    level        = LVL_NORMAL;
+static bool     silenced     = false;   // button pressed while alarming
+static uint32_t bootAt       = 0;
+
+/* Clean-air resistance of each MQ sensor, in kΩ. Filled at boot from
+   config.h or from the datasheet clean-air ratio on the first read. */
+static float mq2R0 = MQ2_R0_KOHM, mq7R0 = MQ7_R0_KOHM;
+
+
+#if MOCK_MODE
 /* ── Mock generation ─────────────────────────────────────────
    A mean-reverting random walk: each step is noise plus a pull
    toward the target. Pure random() would flicker across the whole
@@ -119,28 +146,185 @@ static int mockRaw(float ppm, float fullScale) {
   if (frac > 1.0f) frac = 1.0f;
   return (int)(frac * 4095.0f);
 }
+#endif  // MOCK_MODE
 
 
 /* ── Real sensors (MOCK_MODE 0) ──────────────────────────────
-   Left as the seam for when the modules are actually wired. The
-   pin map and its ADC1 / voltage-divider warnings are in config.h.
+   Pins and constants come from config.h. Every analogue input is on
+   ADC1 so it keeps working with Wi-Fi up.
 
-   You will need a DHT library for the DHT22 (Adafruit "DHT sensor
-   library"), and real MQ readings need a calibrated Rs/R0 curve —
-   the linear scaling below is a placeholder, not a calibration. */
-static void readRealSensors() {
+   The MQ analogue outputs reach the ESP32 through a 10 kΩ / 15 kΩ
+   divider, so the measured voltage is multiplied by MQ_DIVIDER_GAIN
+   (1.667) before the Rs formula:
+
+       Rs  = RL × (Vc − Vout) / Vout
+       ppm = A × (Rs / R0) ^ B
+
+   analogReadMilliVolts() uses the chip's factory ADC calibration,
+   which is noticeably better than a straight 4095 → 3.3 V scale. */
 #if !MOCK_MODE
-  int mq2Raw = analogRead(PIN_MQ2_AO);
-  int mq7Raw = analogRead(PIN_MQ7_AO);
-  mq2Ppm = (mq2Raw / 4095.0f) * 2000.0f;
-  mq7Ppm = (mq7Raw / 4095.0f) * 500.0f;
 
-  // 4-pin IR flame modules pull DO LOW when they see a flame.
-  flameOn = (digitalRead(PIN_FLAME_DO) == LOW);
+/* Average a few samples; without the 100 nF decoupling parts the MQ
+   outputs carry a little heater noise and this removes it. */
+static uint32_t readMilliVoltsAvg(int pin, int n = 16) {
+  uint32_t sum = 0;
+  for (int i = 0; i < n; i++) sum += analogReadMilliVolts(pin);
+  return sum / n;
+}
 
-  // #include <DHT.h>; DHT dht(PIN_DHT22, DHT22); dht.begin() in setup();
-  // tempC = dht.readTemperature(); humPct = dht.readHumidity();
+static int readRawAvg(int pin, int n = 16) {
+  uint32_t sum = 0;
+  for (int i = 0; i < n; i++) sum += analogRead(pin);
+  return (int)(sum / n);
+}
+
+/* Sensor-side output voltage, with the divider undone. */
+static float mqVoltage(int pin) {
+  float vNode = readMilliVoltsAvg(pin) / 1000.0f;
+  float v = vNode * MQ_DIVIDER_GAIN;
+  if (v < 0.05f) v = 0.05f;                 // avoid divide-by-zero below
+  if (v > MQ_SUPPLY_V - 0.05f) v = MQ_SUPPLY_V - 0.05f;
+  return v;
+}
+
+static float mqRs(float vOut, float rlKohm) {
+  return rlKohm * (MQ_SUPPLY_V - vOut) / vOut;
+}
+
+static float mqPpm(float rs, float r0, float a, float b) {
+  if (r0 <= 0.0f) return 0.0f;
+  float ppm = a * powf(rs / r0, b);
+  if (ppm < 0.0f) ppm = 0.0f;
+  if (ppm > 10000.0f) ppm = 10000.0f;
+  return ppm;
+}
+
+static bool mqWarmedUp() {
+  return millis() - bootAt >= MQ_WARMUP_MS;
+}
+
+/* Press 'c' in clean air after burn-in. Prints the R0 values to paste
+   into config.h and uses them immediately. */
+static void calibrateR0() {
+  if (!mqWarmedUp()) {
+    Serial.println("[cal] heaters still warming up, try again later");
+    return;
+  }
+  float rs2 = mqRs(mqVoltage(PIN_MQ2_AO), MQ2_RL_KOHM);
+  float rs7 = mqRs(mqVoltage(PIN_MQ7_AO), MQ7_RL_KOHM);
+  mq2R0 = rs2 / MQ2_CLEAN_AIR_RATIO;
+  mq7R0 = rs7 / MQ7_CLEAN_AIR_RATIO;
+  Serial.printf("[cal] clean air: MQ2 Rs=%.2fk → R0=%.2fk   MQ7 Rs=%.2fk → R0=%.2fk\n",
+                rs2, mq2R0, rs7, mq7R0);
+  Serial.printf("[cal] put in config.h:  #define MQ2_R0_KOHM %.2ff   #define MQ7_R0_KOHM %.2ff\n",
+                mq2R0, mq7R0);
+}
+
+static void readRealSensors() {
+  /* MQ-2 and MQ-7 */
+  float v2 = mqVoltage(PIN_MQ2_AO);
+  float v7 = mqVoltage(PIN_MQ7_AO);
+  mq2Raw = readRawAvg(PIN_MQ2_AO, 4);
+  mq7Raw = readRawAvg(PIN_MQ7_AO, 4);
+
+  float rs2 = mqRs(v2, MQ2_RL_KOHM);
+  float rs7 = mqRs(v7, MQ7_RL_KOHM);
+
+  if (mqWarmedUp()) {
+    /* No R0 in config.h: assume the first warmed-up read is clean air. */
+    if (mq2R0 <= 0.0f) { mq2R0 = rs2 / MQ2_CLEAN_AIR_RATIO; Serial.printf("[cal] MQ2 R0 assumed %.2fk\n", mq2R0); }
+    if (mq7R0 <= 0.0f) { mq7R0 = rs7 / MQ7_CLEAN_AIR_RATIO; Serial.printf("[cal] MQ7 R0 assumed %.2fk\n", mq7R0); }
+    mq2Ppm = mqPpm(rs2, mq2R0, MQ2_CURVE_A, MQ2_CURVE_B);
+    mq7Ppm = mqPpm(rs7, mq7R0, MQ7_CURVE_A, MQ7_CURVE_B);
+  } else {
+    mq2Ppm = 0.0f;
+    mq7Ppm = 0.0f;
+  }
+
+  /* 4-pin IR flame module: DO is LOW when it sees a flame. AO falls
+     as the flame gets stronger, so it is only reported, not judged. */
+  flameOn  = (digitalRead(PIN_FLAME_DO) == LOW);
+  flameRaw = readRawAvg(PIN_FLAME_AO, 4);
+
+  /* DHT22. A failed read returns NaN; keep the previous value so a
+     single missed read does not push a 0 °C to the dashboard. */
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+  if (!isnan(t)) tempC  = t; else Serial.println("[dht] read failed, keeping last value");
+  if (!isnan(h)) humPct = h;
+}
 #endif
+
+
+/* ── Local alarm: LEDs, buzzer, button ───────────────────────── */
+
+static Level computeLevel() {
+  bool danger = flameOn
+             || mq2Ppm >= THRESH_MQ2_DANGER
+             || mq7Ppm >= THRESH_MQ7_DANGER
+             || tempC  >= THRESH_TEMP_DANGER;
+  if (danger) return LVL_DANGER;
+  bool warn = mq2Ppm >= THRESH_MQ2_WARN
+           || mq7Ppm >= THRESH_MQ7_WARN
+           || tempC  >= THRESH_TEMP_WARN;
+  return warn ? LVL_WARN : LVL_NORMAL;
+}
+
+static void updateLevel() {
+  Level next = computeLevel();
+  if (next != level) {
+    Serial.printf("[alarm] %s → %s\n",
+                  level == LVL_DANGER ? "DANGER" : level == LVL_WARN ? "WARN" : "normal",
+                  next  == LVL_DANGER ? "DANGER" : next  == LVL_WARN ? "WARN" : "normal");
+    level = next;
+    if (level == LVL_NORMAL) silenced = false;   // re-arm once things are quiet
+  }
+}
+
+static void silenceAlarm(const char* who) {
+  if (level == LVL_NORMAL) return;
+  if (!silenced) Serial.printf("[alarm] silenced (%s)\n", who);
+  silenced = true;
+}
+
+/* Called every loop. Drives the LEDs from the current level and
+   beeps the buzzer in DANGER until the button or 'q' silences it. */
+static void driveIndicators() {
+  uint32_t now = millis();
+
+#if !MOCK_MODE
+  bool warming = !mqWarmedUp();
+#else
+  bool warming = false;
+#endif
+
+  bool green = false, amber = false, red = false;
+  switch (level) {
+    case LVL_NORMAL: green = true; break;
+    case LVL_WARN:   amber = true; break;
+    case LVL_DANGER: red   = true; break;
+  }
+  if (warming) amber = ((now / 500) % 2) == 0;   // blink while heaters settle
+
+  digitalWrite(PIN_LED_GREEN, green ? HIGH : LOW);
+  digitalWrite(PIN_LED_AMBER, amber ? HIGH : LOW);
+  digitalWrite(PIN_LED_RED,   red   ? HIGH : LOW);
+
+  bool beep = (level == LVL_DANGER) && !silenced
+           && (now % BUZZER_PERIOD_MS) < BUZZER_BEEP_MS;
+  digitalWrite(PIN_BUZZER, beep ? HIGH : LOW);
+}
+
+/* Pressed = LOW with INPUT_PULLUP. Simple time debounce. */
+static void handleButton() {
+  static bool     last      = false;
+  static uint32_t changedAt = 0;
+  bool pressed = (digitalRead(PIN_BUTTON) == LOW);
+  if (pressed != last && millis() - changedAt > 40) {
+    changedAt = millis();
+    last = pressed;
+    if (pressed) silenceAlarm("button");
+  }
 }
 
 
@@ -190,9 +374,15 @@ static void postReadings() {
     "\"temperature_c\":%.1f,\"humidity_pct\":%.1f}}",
     DEVICE_ID, ZONE_ID, (unsigned long)seq, (unsigned long)millis(),
     WiFi.RSSI(), MOCK_MODE ? "true" : "false",
+#if MOCK_MODE
     mq2Ppm, mockRaw(mq2Ppm, 2000.0f),
     mq7Ppm, mockRaw(mq7Ppm, 500.0f),
     flameOn ? 1 : 0, flameOn ? 400 : 3900,
+#else
+    mq2Ppm, mq2Raw,
+    mq7Ppm, mq7Raw,
+    flameOn ? 1 : 0, flameRaw,
+#endif
     tempC, humPct);
 
   HTTPClient http;
@@ -209,7 +399,9 @@ static void postReadings() {
   if (code == 200) {
     okCount++;
     Serial.printf("[post] #%lu %-11s  MQ2 %.0fppm  MQ7 %.0fppm  flame %s  %.1f°C  %.0f%%RH\n",
-                  (unsigned long)seq, SCENARIOS[scenario].name,
+                  (unsigned long)seq,
+                  MOCK_MODE ? SCENARIOS[scenario].name
+                            : (level == LVL_DANGER ? "DANGER" : level == LVL_WARN ? "WARN" : "normal"),
                   mq2Ppm, mq7Ppm, flameOn ? "YES" : "no", tempC, humPct);
   } else {
     failCount++;
@@ -231,16 +423,19 @@ static void postReadings() {
 
 /* ── Serial control ──────────────────────────────────────────── */
 
+#if MOCK_MODE
 static void setScenario(Scenario s, bool fromSerial) {
   scenario   = s;
   scenarioAt = millis();
   if (fromSerial) autoScenario = false;
   Serial.printf("[scn] → %s%s\n", SCENARIOS[s].name, autoScenario ? " (auto)" : "");
 }
+#endif
 
 static void handleSerial() {
   while (Serial.available()) {
     switch (Serial.read()) {
+#if MOCK_MODE
       case 'n': setScenario(SCN_NORMAL, true);   break;
       case 's': setScenario(SCN_SMOULDER, true); break;
       case 'f': setScenario(SCN_FIRE, true);     break;
@@ -249,12 +444,27 @@ static void handleSerial() {
         scenarioAt   = millis();
         Serial.println("[scn] auto-cycle on");
         break;
+#else
+      case 'n': case 's': case 'f': case 'a':
+        Serial.println("[scn] scenarios are only available with MOCK_MODE 1");
+        break;
+      case 'c': calibrateR0(); break;
+#endif
+      case 'q': silenceAlarm("serial"); break;
       case '?':
-        Serial.printf("[status] %s | wifi %s | ip %s | posts ok=%lu fail=%lu\n",
-                      SCENARIOS[scenario].name,
+        Serial.printf("[status] %s | alarm %s%s | wifi %s | ip %s | posts ok=%lu fail=%lu\n",
+                      MOCK_MODE ? SCENARIOS[scenario].name : "REAL",
+                      level == LVL_DANGER ? "DANGER" : level == LVL_WARN ? "WARN" : "normal",
+                      silenced ? " (silenced)" : "",
                       WiFi.status() == WL_CONNECTED ? "up" : "down",
                       WiFi.localIP().toString().c_str(),
                       (unsigned long)okCount, (unsigned long)failCount);
+#if !MOCK_MODE
+        Serial.printf("[status] MQ2 node %lumV  MQ7 node %lumV  (must be ≤3000)  R0 mq2=%.2fk mq7=%.2fk  %s\n",
+                      (unsigned long)readMilliVoltsAvg(PIN_MQ2_AO, 4),
+                      (unsigned long)readMilliVoltsAvg(PIN_MQ7_AO, 4),
+                      mq2R0, mq7R0, mqWarmedUp() ? "warmed up" : "WARMING UP");
+#endif
         break;
       default: break;  // ignore newlines and stray keys
     }
@@ -271,14 +481,37 @@ void setup() {
   Serial.println();
   Serial.println("═══ FireWatch sensor node ═══");
   Serial.printf("  device : %s  (zone %s)\n", DEVICE_ID, ZONE_ID);
-  Serial.printf("  mode   : %s\n", MOCK_MODE ? "MOCK — no sensors required" : "REAL sensors");
+  Serial.printf("  mode   : %s\n", MOCK_MODE ? "MOCK — no sensors required" : "REAL sensors (breadboard layout v3)");
   Serial.printf("  target : %s every %dms\n", SERVER_URL, POST_INTERVAL_MS);
-  Serial.println("  keys   : n normal · s smouldering · f fire · a auto · ? status");
+#if MOCK_MODE
+  Serial.println("  keys   : n normal · s smouldering · f fire · a auto · q silence · ? status");
+#else
+  Serial.println("  keys   : c calibrate R0 · q silence · ? status");
+#endif
   Serial.println();
+
+  bootAt = millis();
+
+  /* Outputs first, so nothing floats while Wi-Fi comes up. */
+  pinMode(PIN_LED_GREEN, OUTPUT);
+  pinMode(PIN_LED_AMBER, OUTPUT);
+  pinMode(PIN_LED_RED,   OUTPUT);
+  pinMode(PIN_BUZZER,    OUTPUT);
+  digitalWrite(PIN_BUZZER, LOW);
+  pinMode(PIN_BUTTON, INPUT_PULLUP);      // pressed = LOW
+
+  /* Quick lamp test so a missing LED is obvious at power-up. */
+  const int leds[] = { PIN_LED_GREEN, PIN_LED_AMBER, PIN_LED_RED };
+  for (int p : leds) { digitalWrite(p, HIGH); delay(150); digitalWrite(p, LOW); }
 
 #if !MOCK_MODE
   pinMode(PIN_FLAME_DO, INPUT);
   analogReadResolution(12);
+  analogSetPinAttenuation(PIN_MQ2_AO,   ADC_11db);   // full 0 to ~3.1 V range
+  analogSetPinAttenuation(PIN_MQ7_AO,   ADC_11db);
+  analogSetPinAttenuation(PIN_FLAME_AO, ADC_11db);
+  dht.begin();
+  Serial.printf("[mq] heaters warming up for %d s, gas reported as 0 until then\n", MQ_WARMUP_MS / 1000);
 #endif
 
   // Seed from a floating ADC pin so two boards flashed identically do not
@@ -292,10 +525,13 @@ void setup() {
 
 void loop() {
   handleSerial();
+  handleButton();
 
+#if MOCK_MODE
   if (autoScenario && millis() - scenarioAt >= SCENARIO_HOLD_MS) {
     setScenario((Scenario)((scenario + 1) % SCENARIO_COUNT), false);
   }
+#endif
 
   if (millis() - lastPostAt >= POST_INTERVAL_MS) {
     lastPostAt = millis();
@@ -304,8 +540,11 @@ void loop() {
 #else
     readRealSensors();
 #endif
+    updateLevel();
     postReadings();
   }
+
+  driveIndicators();
 
   delay(10);   // keep the Wi-Fi stack's housekeeping fed
 }

@@ -56,34 +56,90 @@
 
 /* ── Mock mode ────────────────────────────────────────────────
    1 = synthesise readings (no sensors need to be wired).
-   0 = read the real modules — see readRealSensors() in the .ino,
-       which is where you add the DHT library and your MQ curves. */
-#define MOCK_MODE      1
+   0 = read the real modules wired as in the breadboard layout
+       (the "Sensor Node Breadboard Layout, version 3" sheet).
+
+   The template now defaults to the real circuit. Set it back to 1
+   for a bare board demo. */
+#define MOCK_MODE      0
 
 /* Cycle NORMAL → SMOULDERING → FIRE → back, so a demo shows every
    dashboard state without anyone touching the board. Set to 0 to
    stay in one scenario and drive it from the serial monitor
-   (n / s / f / a). */
+   (n / s / f / a). Only used while MOCK_MODE is 1. */
 #define AUTO_SCENARIO        1
 #define SCENARIO_HOLD_MS     30000   // time in each scenario
 
-/* ── Pin map ──────────────────────────────────────────────────
-   Unused while MOCK_MODE is 1, but wire to these when the real
-   modules arrive.
-
+/* ── Pin map (breadboard layout v3) ───────────────────────────
    ⚠ ADC2 DOES NOT WORK WHILE WI-FI IS ON. That rules out GPIO
    0/2/4/12–15/25–27 for any analogRead — they return garbage the
-   moment the radio starts. Both MQ analog outputs must therefore
-   sit on ADC1: GPIO 32–39.
+   moment the radio starts. All analogue inputs below sit on ADC1
+   (GPIO 32–39).
 
-   ⚠ The MQ-2 and MQ-7 are 5V parts and their AO swings above the
-   ESP32's 3.3V limit. Put a divider (e.g. 10k/20k) on each AO, or
-   you will cook the pin.
+   ⚠ The MQ-2 and MQ-7 are 5 V parts. On the board each AO goes
+   through a 10 kΩ / 15 kΩ divider (10 k on top, 15 k to ground),
+   so the ESP32 sees 0.6 × the module voltage. MQ_DIVIDER_GAIN
+   undoes that in firmware. The node must measure 3.0 V or less
+   before the ESP32 is connected. */
+#define PIN_MQ2_AO      34   // ADC1_CH6, input-only. Divider node E24
+#define PIN_MQ7_AO      35   // ADC1_CH7, input-only. Divider node E34
+#define PIN_FLAME_AO    32   // ADC1_CH4. Flame module AO, 3.3 V supply
+#define PIN_FLAME_DO    27   // digital, LOW = flame seen
+#define PIN_DHT22       4    // digital 1-wire. Module powered from 3.3 V
 
-   Digital pins are unaffected by the ADC2 rule, so the flame DO
-   and the DHT22 data line are fine where they are. */
-#define PIN_MQ2_AO      34   // ADC1_CH6, input-only
-#define PIN_MQ7_AO      35   // ADC1_CH7, input-only
-#define PIN_FLAME_DO    27   // digital, active-LOW on most 4-pin modules
-#define PIN_FLAME_AO    32   // ADC1_CH4 (optional; the DO alone is enough)
-#define PIN_DHT22       4    // digital 1-wire
+/* Outputs. LEDs through 220 Ω to ground; the buzzer is driven
+   straight from the pin (no transistor fitted), so beeps are kept
+   short. The button pulls GPIO 14 to ground when pressed and uses
+   the internal pull-up. */
+#define PIN_LED_GREEN   25   // normal
+#define PIN_LED_AMBER   26   // warning
+#define PIN_LED_RED     33   // danger
+#define PIN_BUZZER      13   // small 3 V active buzzer, direct drive
+#define PIN_BUTTON      14   // silence / acknowledge, pressed = LOW
+
+/* ── Analogue scaling ─────────────────────────────────────────
+   10 k / 15 k divider: Vnode = Vmodule × 15 / 25 = 0.6 × Vmodule,
+   so multiply the measured voltage by 1 / 0.6 = 1.667. */
+#define MQ_DIVIDER_GAIN     1.667f
+#define MQ_SUPPLY_V         5.0f     // heater and divider supply (VIN rail)
+
+/* Load resistor fitted on the breakout board, in kΩ. Common values:
+   MQ-2 modules 5 k (some 1 k), MQ-7 modules 10 k. Check the board or
+   read the resistor marked RL. */
+#define MQ2_RL_KOHM         5.0f
+#define MQ7_RL_KOHM         10.0f
+
+/* R0 is the sensor resistance in clean air. Leave the datasheet
+   ratios below for a first run, then after 24 to 48 h of burn-in
+   press 'c' in the serial monitor with the room well ventilated.
+   It prints the measured R0 values; paste them here. */
+#define MQ2_R0_KOHM         0.0f     // 0 = derive from MQ2_CLEAN_AIR_RATIO at boot
+#define MQ7_R0_KOHM         0.0f     // 0 = derive from MQ7_CLEAN_AIR_RATIO at boot
+#define MQ2_CLEAN_AIR_RATIO 9.83f    // Rs/R0 in clean air, MQ-2 datasheet
+#define MQ7_CLEAN_AIR_RATIO 27.5f    // Rs/R0 in clean air, MQ-7 datasheet
+
+/* ppm = A × (Rs/R0)^B, fitted from the datasheet log-log curves.
+   MQ-2 uses the LPG / combustible gas curve, MQ-7 the CO curve. */
+#define MQ2_CURVE_A         574.25f
+#define MQ2_CURVE_B        -2.222f
+#define MQ7_CURVE_A         99.042f
+#define MQ7_CURVE_B        -1.518f
+
+/* The MQ heaters need time before Rs settles. Gas ppm is reported as
+   0 and the amber LED blinks until this many ms have passed. */
+#define MQ_WARMUP_MS        60000
+
+/* ── Local alarm levels ───────────────────────────────────────
+   These mirror the bridge's thresholds so the LEDs and buzzer agree
+   with the dashboard colours. */
+#define THRESH_MQ2_WARN     400.0f
+#define THRESH_MQ2_DANGER   800.0f
+#define THRESH_MQ7_WARN     35.0f
+#define THRESH_MQ7_DANGER   100.0f
+#define THRESH_TEMP_WARN    45.0f
+#define THRESH_TEMP_DANGER  60.0f
+
+/* Buzzer pattern in DANGER: a short beep every period. Keep BEEP_MS
+   short while the buzzer is driven directly from the GPIO. */
+#define BUZZER_BEEP_MS      120
+#define BUZZER_PERIOD_MS    1000
