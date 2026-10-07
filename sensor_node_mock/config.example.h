@@ -139,6 +139,30 @@
 #define THRESH_TEMP_WARN    45.0f
 #define THRESH_TEMP_DANGER  60.0f
 
+/* ── IR flame module polarity ─────────────────────────────────
+   Vendors ship this module with BOTH DO polarities and nothing on
+   the board says which you have.
+
+     1 = DO goes LOW when a flame is seen  (the common one)
+     0 = DO goes HIGH when a flame is seen
+
+   Wrong here and every flame reads backwards: the dashboard says
+   "no fire" at a flame and alarms at an empty room.
+
+   To find yours: press '?' in the serial monitor with no flame,
+   then again with a lighter in front of the module. The line prints
+   the raw pin. Whichever level appears WITH the flame is the active
+   one — if that is HIGH, set this to 0. */
+#define FLAME_DO_ACTIVE_LOW   1
+
+/* Hold the buzzer off while the MQ heaters settle (MQ_WARMUP_MS).
+   The LEDs still show the level; only the sound waits.
+
+   ⚠ A real flame in the first minute is therefore silent on this
+   board. The dashboard still alarms. Set to 0 if the node must be
+   audible from the instant it powers up. */
+#define BUZZER_SILENT_DURING_WARMUP   1
+
 /* Buzzer pattern in DANGER: a short beep every period. Keep BEEP_MS
    short while the buzzer is driven directly from the GPIO. */
 #define BUZZER_BEEP_MS      120

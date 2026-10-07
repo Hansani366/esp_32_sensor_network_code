@@ -59,6 +59,16 @@
   static DHT dht(PIN_DHT22, DHT22);
 #endif
 
+/* config.h is gitignored, so a config.h written before these settings
+   existed is still a valid one. Default them here rather than fail to
+   compile on someone else's copy. */
+#ifndef FLAME_DO_ACTIVE_LOW
+  #define FLAME_DO_ACTIVE_LOW 1
+#endif
+#ifndef BUZZER_SILENT_DURING_WARMUP
+  #define BUZZER_SILENT_DURING_WARMUP 1
+#endif
+
 /* ── Scenarios ───────────────────────────────────────────────
    Each is a set of targets the readings wander around, chosen to
    land either side of the bridge's thresholds (MQ-2 warn 400 /
@@ -85,6 +95,10 @@ static const int SCENARIO_COUNT = sizeof(SCENARIOS) / sizeof(SCENARIOS[0]);
    targets each tick, so the dashboard shows a believable drift
    instead of values teleporting between extremes. */
 static float mq2Ppm = 120.0f, mq7Ppm = 4.0f, tempC = 28.0f, humPct = 62.0f;
+/* Those two are start-up placeholders. A DHT22 that never answers leaves
+   them in place, and 28.0 C / 62 %RH reads like a real room on the
+   dashboard — the failure that looks most like success. */
+static bool dhtEverRead = false;
 static bool  flameOn = false;
 
 static Scenario scenario     = SCN_NORMAL;
@@ -241,16 +255,25 @@ static void readRealSensors() {
     mq7Ppm = 0.0f;
   }
 
-  /* 4-pin IR flame module: DO is LOW when it sees a flame. AO falls
-     as the flame gets stronger, so it is only reported, not judged. */
+  /* 4-pin IR flame module. Vendors ship both DO polarities and the
+     board gives no clue which you have, so FLAME_DO_ACTIVE_LOW picks.
+     A module wired the other way round reads every flame backwards:
+     alarm when the room is cold, silence when it is burning.
+     AO falls as the flame gets stronger, so it is only reported,
+     never judged — the comparator on the module already decided. */
+#if FLAME_DO_ACTIVE_LOW
   flameOn  = (digitalRead(PIN_FLAME_DO) == LOW);
+#else
+  flameOn  = (digitalRead(PIN_FLAME_DO) == HIGH);
+#endif
   flameRaw = readRawAvg(PIN_FLAME_AO, 4);
 
   /* DHT22. A failed read returns NaN; keep the previous value so a
      single missed read does not push a 0 °C to the dashboard. */
   float t = dht.readTemperature();
   float h = dht.readHumidity();
-  if (!isnan(t)) tempC  = t; else Serial.println("[dht] read failed, keeping last value");
+  if (!isnan(t)) { tempC = t; dhtEverRead = true; }
+  else Serial.println("[dht] read failed, keeping last value");
   if (!isnan(h)) humPct = h;
 }
 #endif
@@ -310,7 +333,14 @@ static void driveIndicators() {
   digitalWrite(PIN_LED_AMBER, amber ? HIGH : LOW);
   digitalWrite(PIN_LED_RED,   red   ? HIGH : LOW);
 
+  /* The LEDs still show DANGER while the heaters settle; only the
+     buzzer is held off. Gas already reports 0 until warm, so an alarm
+     in the first minute comes from the flame pin or the DHT22 — and
+     those are exactly what a half-wired board gets wrong. */
   bool beep = (level == LVL_DANGER) && !silenced
+#if BUZZER_SILENT_DURING_WARMUP
+           && !warming
+#endif
            && (now % BUZZER_PERIOD_MS) < BUZZER_BEEP_MS;
   digitalWrite(PIN_BUZZER, beep ? HIGH : LOW);
 }
@@ -464,6 +494,17 @@ static void handleSerial() {
                       (unsigned long)readMilliVoltsAvg(PIN_MQ2_AO, 4),
                       (unsigned long)readMilliVoltsAvg(PIN_MQ7_AO, 4),
                       mq2R0, mq7R0, mqWarmedUp() ? "warmed up" : "WARMING UP");
+        /* Raw pin, before the polarity setting is applied. Hold a flame to
+           the module and watch which way this moves: whichever level it
+           shows WITH a flame is the active one, and FLAME_DO_ACTIVE_LOW
+           must agree with it. Reading the pin beats trusting the vendor. */
+        Serial.printf("[status] flame DO pin=%s → %s (FLAME_DO_ACTIVE_LOW=%d)  AO raw=%d\n",
+                      digitalRead(PIN_FLAME_DO) == HIGH ? "HIGH" : "LOW",
+                      flameOn ? "FLAME" : "no flame",
+                      FLAME_DO_ACTIVE_LOW,
+                      readRawAvg(PIN_FLAME_AO, 4));
+        Serial.printf("[status] dht %.1f°C %.0f%%RH %s\n", tempC, humPct,
+                      dhtEverRead ? "live" : "NEVER READ — these are the start-up placeholders");
 #endif
         break;
       default: break;  // ignore newlines and stray keys
@@ -505,7 +546,14 @@ void setup() {
   for (int p : leds) { digitalWrite(p, HIGH); delay(150); digitalWrite(p, LOW); }
 
 #if !MOCK_MODE
-  pinMode(PIN_FLAME_DO, INPUT);
+  /* Pull the idle level to "no flame" for whichever polarity is set, so
+     an unplugged module stays quiet instead of faking a fire. The module
+     drives DO hard enough to win against the internal resistor. */
+#if FLAME_DO_ACTIVE_LOW
+  pinMode(PIN_FLAME_DO, INPUT_PULLUP);
+#else
+  pinMode(PIN_FLAME_DO, INPUT_PULLDOWN);
+#endif
   analogReadResolution(12);
   analogSetPinAttenuation(PIN_MQ2_AO,   ADC_11db);   // full 0 to ~3.1 V range
   analogSetPinAttenuation(PIN_MQ7_AO,   ADC_11db);

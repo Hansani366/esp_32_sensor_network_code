@@ -154,6 +154,8 @@ Table 4 lists every setting.
 | `MQ2_RL_KOHM`, `MQ7_RL_KOHM` | `5`, `10` | Load resistor fitted on each MQ breakout board. |
 | `MQ2_R0_KOHM`, `MQ7_R0_KOHM` | `0` | Clean-air resistance from the `c` key. `0` means assume clean air at first read. |
 | `MQ_WARMUP_MS` | `60000` | Gas ppm is reported as `0` and the amber LED blinks until this has passed. |
+| `FLAME_DO_ACTIVE_LOW` | `1` | `1` if the flame module pulls DO **low** on a flame, `0` if it drives it **high**. Vendors ship both. Wrong here and every flame reads backwards. |
+| `BUZZER_SILENT_DURING_WARMUP` | `1` | Holds the buzzer off until the heaters settle. The LEDs and the dashboard still alarm. |
 | `THRESH_*` | as the bridge | Levels that drive the LEDs and buzzer locally. |
 | `BUZZER_BEEP_MS`, `BUZZER_PERIOD_MS` | `120`, `1000` | Beep pattern in the danger state. |
 
@@ -298,6 +300,9 @@ from Table 5. Nothing changes on the server.
 | Posts succeed, but the card is empty | The dashboard you are watching is served by a different computer from the one the board posts to. |
 | The card shows **Stale** | The posts stopped. The bridge greys a node after 15 seconds without a sample. |
 | The node shows a room that does not exist | `ZONE_ID` belongs to the other site. See Table 5. |
+| Flame reads **backwards** — `flame YES` in a cold room, `no` at a lighter | Your module drives DO the opposite way. Set `FLAME_DO_ACTIVE_LOW 0`. Press `?` with and without a flame to see the raw pin. |
+| Temperature stuck at exactly **28.0 °C** and humidity at **62%** | Those are the start-up placeholders, so the DHT22 has never answered. Press `?`: it says `NEVER READ`. Check 3.3 V, GND, DATA on GPIO 4 and the 4.7–10 kΩ pull-up. |
+| Buzzer sounds with no fire | A floating flame pin, or the polarity above. The firmware pulls the pin to the idle level, so suspect the module's 3.3 V supply first. |
 | It worked yesterday but not today | The computer's address comes from DHCP. Reserve it on the router. |
 
 ## 5. Scope and design decisions
